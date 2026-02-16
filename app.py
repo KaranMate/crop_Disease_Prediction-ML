@@ -1,110 +1,131 @@
 import streamlit as st
 import pandas as pd
 import joblib
+import numpy as np
+from PIL import Image
 from catboost import Pool
+import tensorflow as tf
 
 # ======================================================
-# PAGE CONFIG
+# 1. PAGE CONFIG & LANGUAGE
 # ======================================================
-st.set_page_config(
-    page_title="Crop Disease Prediction",
-    page_icon="🌾",
-    layout="wide"
-)
+st.set_page_config(page_title="AgroSmart AI", page_icon="🌾", layout="wide")
+
+# Multilingual Content
+LANG_DATA = {
+    "English": {
+        "title": "🌾 Smart Crop Diagnostic Station",
+        "tab1": "📊 Data-Based Analysis",
+        "tab2": "📷 Image-Based Analysis",
+        "btn": "Analyze Now",
+        "result_head": "Diagnosis Result",
+        "sol_head": "Recommended Treatment",
+        "upload_label": "Upload a photo of the infected leaf",
+        "sev": "Severity"
+    },
+    "Hindi": {
+        "title": "🌾 स्मार्ट फसल निदान केंद्र",
+        "tab1": "📊 डेटा आधारित विश्लेषण",
+        "tab2": "📷 फोटो आधारित विश्लेषण",
+        "btn": "अभी विश्लेषण करें",
+        "result_head": "निदान परिणाम",
+        "sol_head": "अनुशंसित उपचार",
+        "upload_label": "संक्रमित पत्ती का फोटो अपलोड करें",
+        "sev": "गंभीरता"
+    }
+}
+
+# Language Selector (Placed at top for visibility)
+lang_choice = st.radio("🌐 Choose Language / भाषा चुनें", ["English", "Hindi"], horizontal=True)
+t = LANG_DATA[lang_choice]
 
 # ======================================================
-# LOAD MODEL & ENCODER
+# 2. LOAD MODELS
 # ======================================================
 @st.cache_resource
-def load_assets():
-    # Ensure these files are in the same folder as this script
-    model = joblib.load("catboost_crop_disease_model.pkl")
-    encoder = joblib.load("crop_disease_label_encoder.pkl")
-    return model, encoder
+def load_all():
+    cb = joblib.load("catboost_crop_disease_model.pkl")
+    le = joblib.load("crop_disease_label_encoder.pkl")
+    cnn = tf.keras.models.load_model("crop_disease_cnn.h5")
+    return cb, le, cnn
 
-model, label_encoder = load_assets()
+model, label_encoder, cnn_model = load_all()
 
-# ======================================================
-# DISEASE KNOWLEDGE BASE
-# ======================================================
-DISEASE_INFO = {
-    "Fungal": {"severity": "High", "fertilizer": "Potassium + Fungicide", "color": "#ff4b4b"},
-    "Bacterial": {"severity": "Medium", "fertilizer": "NPK + Copper Spray", "color": "#ffa500"},
-    "Viral": {"severity": "Very High", "fertilizer": "Remove Plant + Compost", "color": "#ff0000"},
-    "Pest": {"severity": "Medium", "fertilizer": "Neem Oil + Nitrogen", "color": "#f1c40f"},
-    "Healthy": {"severity": "None", "fertilizer": "Normal Maintenance", "color": "#2ecc71"}
+# UNIFIED KNOWLEDGE BASE (Disease -> Solution)
+DISEASE_SOLUTIONS = {
+    "Fungal": {"sev": "High", "sol": "Apply Fungicide + Reduce moisture.", "clr": "#ff4b4b"},
+    "Bacterial": {"sev": "Medium", "sol": "Use Copper-based sprays + Prune infected parts.", "clr": "#ffa500"},
+    "Viral": {"sev": "Extreme", "sol": "No cure. Remove plant immediately to stop spread.", "clr": "#ff0000"},
+    "Pest": {"sev": "High", "sol": "Spray Neem Oil + Apply organic pesticides.", "clr": "#f1c40f"},
+    "Healthy": {"sev": "None", "sol": "Keep doing what you're doing! Crop is healthy.", "clr": "#2ecc71"}
 }
 
 # ======================================================
-# SIDEBAR INPUTS
+# 3. UI TABS
 # ======================================================
-st.sidebar.title("🌱 Input Parameters")
+st.title(t["title"])
+tab1, tab2 = st.tabs([t["tab1"], t["tab2"]])
 
-crop = st.sidebar.selectbox(
-    "Select Crop",
-    ["Tomato", "Potato", "Rice", "Wheat", "Maize", "Cotton", "Sugarcane", "Apple", "Groundnut", "Mango"]
-)
-
-st.sidebar.subheader("🌦 Environment")
-temp = st.sidebar.slider("🌡 Temperature (°C)", 10.0, 50.0, 25.0)
-hum = st.sidebar.slider("💧 Humidity (%)", 10.0, 100.0, 50.0)
-rain = st.sidebar.slider("🌧 Rainfall (mm)", 0.0, 500.0, 150.0)
-
-st.sidebar.subheader("🧪 Soil & Health")
-ph = st.sidebar.slider("🧪 Soil pH", 3.0, 10.0, 6.5)
-moisture = st.sidebar.slider("💦 Soil Moisture (%)", 0.0, 100.0, 40.0)
-
-# New inputs required by your model
-leaf_spots = st.sidebar.radio("🍂 Visible Leaf Spots?", ["No", "Yes"])
-wilting = st.sidebar.radio("🥀 Plant Wilting?", ["No", "Yes"])
-
-predict_btn = st.sidebar.button("🔍 Predict Disease")
-
-# ======================================================
-# MAIN UI
-# ======================================================
-st.markdown("<h1 style='text-align:center;'>🌾 Smart Crop Disease Prediction</h1>", unsafe_allow_html=True)
-st.markdown("---")
-
-if predict_btn:
-    # 🔴 NAMES MUST MATCH YOUR NOTEBOOK EXACTLY
-    input_df = pd.DataFrame({
-        "Crop": [crop],
-        "Temperature(C)": [temp],      # Added (C)
-        "Humidity(%)": [hum], 
-        "Rainfall(mm)": [rain],        # Added (mm)
-        "Soil_pH": [ph],
-        "Soil_Moisture(%)": [moisture], # Added missing feature
-        "Leaf_Spots": [1 if leaf_spots == "Yes" else 0], # Added missing feature
-        "Wilting": [1 if wilting == "Yes" else 0]        # Added missing feature
-    })
-
-    # Prepare Pool for CatBoost
-    # (Only 'Crop' was marked as cat_feature in your notebook)
-    input_pool = Pool(data=input_df, cat_features=["Crop"])
-
-    # Prediction
-    raw_pred = model.predict(input_pool)
+# --- TAB 1: CATBOOST (FIELD DATA) ---
+with tab1:
+    st.header(t["tab1"])
+    col_in, col_out = st.columns([1, 1])
     
-    # Handle the array shape (flattening to get the single integer)
-    pred_idx = int(raw_pred.flatten()[0])
-    disease = label_encoder.inverse_transform([pred_idx])[0]
+    with col_in:
+        crop = st.selectbox("Crop", ["Tomato", "Potato", "Rice", "Maize"])
+        temp = st.slider("Temperature (°C)", 10, 50, 25)
+        hum = st.slider("Humidity (%)", 10, 100, 60)
+        rain = st.slider("Rainfall (mm)", 0, 500, 150)
+        ph = st.slider("Soil pH", 4.0, 9.0, 6.5)
+        moist = st.slider("Moisture (%)", 0, 100, 40)
+        spots = st.radio("Leaf Spots?", ["No", "Yes"])
+        wilt = st.radio("Wilting?", ["No", "Yes"])
+        
+    if st.button(t["btn"], key="btn_data"):
+        data = pd.DataFrame({
+            "Crop": [crop], "Temperature(C)": [temp], "Humidity(%)": [hum],
+            "Rainfall(mm)": [rain], "Soil_pH": [ph], "Soil_Moisture(%)": [moist],
+            "Leaf_Spots": [1 if spots=="Yes" else 0], "Wilting": [1 if wilt=="Yes" else 0]
+        })
+        pool = Pool(data=data, cat_features=["Crop"])
+        res_idx = int(model.predict(pool).flatten()[0])
+        res_name = label_encoder.inverse_transform([res_idx])[0]
+        
+        info = DISEASE_SOLUTIONS.get(res_name, DISEASE_SOLUTIONS["Healthy"])
+        st.success(f"### {t['result_head']}: {res_name}")
+        st.info(f"**{t['sol_head']}:** {info['sol']}")
 
-    # Get UI info
-    info = DISEASE_INFO.get(disease, DISEASE_INFO["Healthy"])
+# --- TAB 2: CNN (IMAGE UPLOAD) ---
+with tab2:
+    st.header(t["tab2"])
+    up_file = st.file_uploader(t["upload_label"], type=["jpg", "jpeg", "png"])
 
-    # Display Results
-    res_col1, res_col2, res_col3 = st.columns(3)
-    
-    res_col1.metric("Disease Detected", disease)
-    res_col2.metric("Severity Level", info["severity"])
-    res_col3.write(f"**Fertilizer:** \n {info['fertilizer']}")
-
-    st.success(f"Prediction Complete for {crop}!")
-    
-    st.markdown("---")
-    st.subheader("📋 Data Sent to Model")
-    st.write(input_df)
-
-else:
-    st.info("Adjust the sliders and click Predict to see results.")
+    if up_file:
+        img = Image.open(up_file)
+        st.image(img, width=400, caption="Uploaded Image")
+        
+        if st.button(t["btn"], key="btn_img"):
+            # Process Image
+            img_res = img.resize((224, 224))
+            img_arr = np.array(img_res) / 255.0
+            img_arr = np.expand_dims(img_arr, axis=0)
+            
+            # Predict
+            preds = cnn_model.predict(img_arr)
+            # CNN classes must match the order in train_cnn.py
+            classes = ["Bacterial", "Fungal", "Healthy", "Pest", "Viral"]
+            res_name = classes[np.argmax(preds)]
+            
+            # Display Result + Solution
+            info = DISEASE_SOLUTIONS.get(res_name, DISEASE_SOLUTIONS["Healthy"])
+            
+            st.markdown(f"### {t['result_head']}: <span style='color:{info['clr']}'>{res_name}</span>", unsafe_allow_html=True)
+            
+            # THE SOLUTION BOX
+            st.markdown(f"""
+                <div style="background-color:{info['clr']}20; padding:20px; border-radius:10px; border-left: 10px solid {info['clr']};">
+                    <h4>✅ {t['sol_head']}</h4>
+                    <p style="font-size:18px;">{info['sol']}</p>
+                    <strong>{t['sev']}:</strong> {info['sev']}
+                </div>
+            """, unsafe_allow_html=True)
